@@ -7,6 +7,7 @@ and 30-day recursive price-band forecasting.
 import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.graph_objects as go
 
 # ── Page config — must be FIRST streamlit call ────────────────────────────────
 st.set_page_config(
@@ -17,6 +18,11 @@ st.set_page_config(
 )
 
 from model  import run_pipeline, TARGETS
+from auth   import (
+    init_session, is_authenticated, logout,
+    current_user, require_admin,
+    render_login_page, render_admin_panel,
+)
 from charts import (
     fig_historical_bands,
     fig_forecast,
@@ -31,6 +37,26 @@ from charts import (
     fig_weather_correlation,
     fig_decomposition,
     metrics_summary,
+    # District charts
+    fig_district_bands,
+    fig_district_market_overlay,
+    fig_district_seasonality,
+    fig_district_coverage,
+    fig_district_comparison,
+    # Correlation charts
+    fig_correlation_heatmap,
+    fig_rolling_correlation,
+    fig_top_correlations,
+)
+from aggregation import (
+    aggregate_district,
+    aggregate_all_districts,
+    district_summary,
+    weekly_pivot,
+    correlation_matrix,
+    rolling_correlation,
+    all_market_correlation,
+    district_weekly_pivot,
 )
 
 # ── Custom CSS ─────────────────────────────────────────────────────────────────
@@ -110,7 +136,7 @@ def get_result(market: str):
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 def render_sidebar(df: pd.DataFrame):
-    st.sidebar.markdown("## 🌿 Pepper Forecast")
+    st.sidebar.markdown("## 🌿 Pepper Price Forecast")
     st.sidebar.markdown("**Karnataka APMC Markets**")
     st.sidebar.markdown("---")
 
@@ -169,6 +195,24 @@ def render_sidebar(df: pd.DataFrame):
   <div style='color:#e0e0e0;font-size:0.8rem;'>Modal: ₹{latest["Modal"]:,.0f}</div>
 </div>
 """, unsafe_allow_html=True)
+
+
+    # ── Logged-in user info + logout ─────────────────────────────────────────
+    user = current_user()
+    role_badge = '🔴 Admin' if user['role'] == 'admin' else '🟢 Viewer'
+    st.sidebar.markdown(
+        f"<div style='background:#1a1d27;border:1px solid #2a2d3a;border-radius:10px;"
+        f"padding:12px 14px;margin-bottom:8px;'>"
+        f"<div style='color:#90caf9;font-size:0.68rem;font-weight:700;letter-spacing:1px;"
+        f"text-transform:uppercase;margin-bottom:4px;'>Logged In As</div>"
+        f"<div style='color:#e0e0e0;font-size:0.85rem;font-weight:600;'>{user['name']}</div>"
+        f"<div style='color:#546e7a;font-size:0.72rem;'>@{user['username']}&nbsp;&middot;&nbsp;{role_badge}</div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    if st.sidebar.button('🚪 Sign Out', use_container_width=True, key='logout_btn'):
+        logout()
+        st.rerun()
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("""
@@ -287,7 +331,8 @@ Please select a different market from the sidebar.
     st.markdown("---")
 
     # ── Tabs ──────────────────────────────────────────────────────────────────
-    tabs = st.tabs([
+    # Show admin tab only for admin users
+    tab_labels = [
         "🔮 Forecast",
         "📈 Historical",
         "🧭 EDA",
@@ -295,7 +340,12 @@ Please select a different market from the sidebar.
         "📊 Residuals",
         "🔑 Features",
         "📋 Forecast Table",
-    ])
+        "🏘️ District View",
+        "🔗 Correlation",
+    ]
+    if require_admin():
+        tab_labels.append("🔐 Admin Panel")
+    tabs = st.tabs(tab_labels)
 
     # ──────────────────────────────────────────────────────────────────────────
     # TAB 1 — FORECAST
@@ -426,7 +476,7 @@ Ideally centred on zero with no systematic pattern over time.
 <p style='color:#b0bec5;font-size:0.85rem;'>
 Top-15 features by GBM importance for each price band.
 Lag and rolling-mean features consistently dominate,
-confirming the strong autocorrelative structure of Pepper prices.
+confirming the strong autocorrelative structure of pepper prices.
 </p>
 """, unsafe_allow_html=True)
         st.plotly_chart(fig_feature_importance(result, market), use_container_width=True, key="feature_imp")
@@ -484,7 +534,221 @@ confirming the strong autocorrelative structure of Pepper prices.
             use_container_width=False,
         )
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # TAB 8 — DISTRICT VIEW
+    # ──────────────────────────────────────────────────────────────────────────
+    with tabs[7]:
+        st.markdown('<div class="badge">DISTRICT-LEVEL ANALYSIS</div>', unsafe_allow_html=True)
+        df_full = load_data()
+        dist_of_market = df_full[df_full["Market"] == market]["District"].iloc[0]
+
+        # District selector — default to the district of the current market
+        all_districts = sorted(df_full["District"].dropna().unique())
+        sel_district = st.selectbox(
+            "📍 Select District", all_districts,
+            index=all_districts.index(dist_of_market) if dist_of_market in all_districts else 0,
+            key="district_sel",
+        )
+
+        with st.spinner(f"Aggregating district data for {sel_district}…"):
+            dist_agg = aggregate_district(df_full, sel_district)
+            dist_info = district_summary(df_full, sel_district)
+
+        if dist_agg is None:
+            st.warning(f"⚠️ Insufficient data for district **{sel_district}**.")
+        else:
+            # Info cards row
+            ic1, ic2, ic3, ic4 = st.columns(4)
+            ic1.metric("Markets in District", dist_info["n_markets"])
+            ic2.metric("Total Records", f"{dist_info['total_records']:,}")
+            ic3.metric("Dominant Market", dist_info["dominant_market"])
+            ic4.metric("Date Range",
+                       f"{dist_info['date_min'].strftime('%b %Y')} → "
+                       f"{dist_info['date_max'].strftime('%b %Y')}")
+
+            # Price bands
+            st.plotly_chart(fig_district_bands(dist_agg, sel_district),
+                            use_container_width=True, key="dist_bands")
+
+            # Market overlay + seasonality side by side
+            col_a, col_b = st.columns(2)
+            price_choice = col_a.radio(
+                "Price Band for Overlay", ["Modal", "Max", "Min"],
+                horizontal=True, key="dist_overlay_price"
+            )
+            with col_a:
+                st.plotly_chart(
+                    fig_district_market_overlay(df_full, sel_district, price_choice),
+                    use_container_width=True, key="dist_overlay",
+                )
+            with col_b:
+                st.plotly_chart(
+                    fig_district_seasonality(dist_agg, sel_district),
+                    use_container_width=True, key="dist_season",
+                )
+
+            # Coverage chart
+            st.plotly_chart(fig_district_coverage(dist_agg, sel_district),
+                            use_container_width=True, key="dist_coverage")
+
+            # Cross-district comparison
+            st.markdown("---")
+            st.markdown("##### 🏗️ Cross-District Price Comparison (last 30 days)")
+            with st.spinner("Computing district aggregates…"):
+                all_dist_agg = aggregate_all_districts(df_full)
+            if all_dist_agg:
+                st.plotly_chart(
+                    fig_district_comparison(all_dist_agg),
+                    use_container_width=True, key="dist_compare",
+                )
+
+            # District stats table
+            with st.expander("📊 District Weighted Price Summary"):
+                show = dist_agg[["Min", "Max", "Modal", "Total_Arrivals", "Markets_Active"]].describe().round(1)
+                st.dataframe(show, use_container_width=True)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # TAB 9 — CORRELATION EXPLORER
+    # ──────────────────────────────────────────────────────────────────────────
+    with tabs[8]:
+        st.markdown('<div class="badge">MARKET CORRELATION EXPLORER</div>', unsafe_allow_html=True)
+        df_full = load_data()
+
+        corr_mode = st.radio(
+            "Analysis Level",
+            ["🌐 All Markets", "🏘️ District Markets", "🔬 Two Markets"],
+            horizontal=True, key="corr_mode",
+        )
+        price_col_corr = st.selectbox(
+            "Price Band", ["Modal", "Min", "Max"],
+            key="corr_price_col",
+        )
+
+        st.markdown("---")
+
+        # ── All-markets heatmap ───────────────────────────────────────────────
+        if corr_mode == "🌐 All Markets":
+            with st.spinner("Computing all-market correlation matrix…"):
+                corr_all = all_market_correlation(df_full, price_col_corr, min_records=50)
+
+            st.markdown(f"##### All-Market Correlation Heatmap ({price_col_corr} price, weekly resampled)")
+            st.plotly_chart(
+                fig_correlation_heatmap(corr_all,
+                    f"All-Market Pearson Correlation — {price_col_corr} Price"),
+                use_container_width=True, key="corr_all_heatmap",
+            )
+
+            # Reference market bar chart
+            st.markdown("---")
+            ref_market = st.selectbox(
+                "Show correlations for market:",
+                options=[m for m in corr_all.columns],
+                index=0, key="corr_ref_market",
+            )
+            st.plotly_chart(
+                fig_top_correlations(corr_all, ref_market, top_n=20),
+                use_container_width=True, key="corr_top_bars",
+            )
+
+            # Download correlation matrix
+            csv_corr = corr_all.round(3).to_csv().encode("utf-8")
+            st.download_button("⬇️ Download Correlation Matrix CSV",
+                               csv_corr, f"correlation_{price_col_corr}.csv",
+                               "text/csv", key="corr_download")
+
+        # ── District-level heatmap ────────────────────────────────────────────
+        elif corr_mode == "🏘️ District Markets":
+            dist_choices = sorted(df_full["District"].dropna().unique())
+            sel_dist_corr = st.selectbox(
+                "Select District", dist_choices,
+                key="corr_dist_sel",
+            )
+            with st.spinner(f"Computing correlation for {sel_dist_corr}…"):
+                pivot_dist = district_weekly_pivot(df_full, sel_dist_corr, price_col_corr)
+
+            if pivot_dist.empty or pivot_dist.shape[1] < 2:
+                st.warning(f"⚠️ Not enough shared data between markets in **{sel_dist_corr}** for correlation.")
+            else:
+                corr_dist = correlation_matrix(pivot_dist, min_periods=10)
+                st.markdown(f"##### {sel_dist_corr} — Intra-district Correlation ({price_col_corr})")
+                st.plotly_chart(
+                    fig_correlation_heatmap(corr_dist,
+                        f"{sel_dist_corr} Market Correlation — {price_col_corr} Price"),
+                    use_container_width=True, key="corr_dist_heatmap",
+                )
+
+                st.markdown("##### Market Price Overlay (for visual cross-check)")
+                st.plotly_chart(
+                    fig_district_market_overlay(df_full, sel_dist_corr, price_col_corr),
+                    use_container_width=True, key="corr_dist_overlay",
+                )
+
+        # ── Two-market rolling correlation ────────────────────────────────────
+        else:
+            all_markets = sorted(df_full["Market"].dropna().unique())
+            col_m1, col_m2 = st.columns(2)
+            mkt_a = col_m1.selectbox("Market A", all_markets,
+                                      index=all_markets.index("SIRSI") if "SIRSI" in all_markets else 0,
+                                      key="corr_mkt_a")
+            mkt_b = col_m2.selectbox("Market B", all_markets,
+                                      index=all_markets.index("SIDDAPURA") if "SIDDAPURA" in all_markets else 1,
+                                      key="corr_mkt_b")
+            roll_window = st.slider("Rolling window (weeks)", 8, 52, 26, key="corr_window")
+
+            if mkt_a == mkt_b:
+                st.warning("Please select two different markets.")
+            else:
+                with st.spinner(f"Computing rolling correlation {mkt_a} × {mkt_b}…"):
+                    piv = weekly_pivot(df_full, [mkt_a, mkt_b], price_col_corr)
+                    rc  = rolling_correlation(piv, mkt_a, mkt_b, window=roll_window)
+                    full_corr = correlation_matrix(piv, min_periods=10)
+
+                # Summary metric
+                r_val = full_corr.loc[mkt_a, mkt_b] if mkt_a in full_corr.index else float("nan")
+                strength = ("🟢 Strong" if abs(r_val) >= 0.8
+                            else "🟡 Moderate" if abs(r_val) >= 0.5
+                            else "🔴 Weak")
+                st.metric(f"Overall Pearson r ({mkt_a} × {mkt_b})", f"{r_val:.3f}", strength)
+
+                st.plotly_chart(
+                    fig_rolling_correlation(rc, mkt_a, mkt_b, roll_window),
+                    use_container_width=True, key="corr_rolling",
+                )
+
+                # Side-by-side price comparison
+                st.markdown("---")
+                st.markdown("##### Raw Price Comparison")
+                fig_compare = go.Figure()
+                for mkt, color in [(mkt_a, "#4fc3f7"), (mkt_b, "#66bb6a")]:
+                    mdf_c = df_full[df_full["Market"] == mkt].sort_values("date")
+                    fig_compare.add_trace(go.Scatter(
+                        x=mdf_c["date"], y=mdf_c[price_col_corr],
+                        name=mkt, line=dict(color=color, width=1.2),
+                        hovertemplate=f"{mkt}: ₹%{{y:,.0f}}<extra></extra>",
+                    ))
+                fig_compare.update_layout(
+                    height=360, paper_bgcolor="#0f1117", plot_bgcolor="#1a1d27",
+                    font=dict(color="#e0e0e0"),
+                    legend=dict(bgcolor="#1a1d27", bordercolor="#2a2d3a"),
+                    xaxis=dict(gridcolor="#2a2d3a"),
+                    yaxis=dict(gridcolor="#2a2d3a", title=f"{price_col_corr} ₹/q"),
+                    margin=dict(l=55, r=25, t=40, b=40),
+                )
+                st.plotly_chart(fig_compare, use_container_width=True, key="corr_price_compare")
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # TAB 10 — ADMIN PANEL (admin role only)
+    # ──────────────────────────────────────────────────────────────────────────
+    if require_admin():
+        with tabs[9]:
+            render_admin_panel()
+
 
 # ── Entry point ────────────────────────────────────────────────────────────────
-if __name__ == "__main__":
+init_session()
+
+if not is_authenticated():
+    render_login_page()
+    st.stop()
+else:
     main()

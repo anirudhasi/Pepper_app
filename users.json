@@ -1,0 +1,10 @@
+{
+  "admin": {
+    "name": "Administrator",
+    "role": "admin",
+    "salt": "8609891de46ba1405e3907287c9197ac",
+    "password_hash": "809df0ce6df076ed4a2fc2a282ca64502f5af4f1343539e465b584358a3d1dbb",
+    "created_at": "2026-03-13T18:17:51.508891",
+    "active": true
+  }
+}

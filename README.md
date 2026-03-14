@@ -9,7 +9,7 @@ model validation diagnostics, and a 30-day recursive ensemble forecast.
 ## 📁 Project Structure
 
 ```
-pepper_app/
+areca_app/
 ├── app.py               ← Main Streamlit application (entry point)
 ├── model.py             ← ML pipeline: data prep, feature engineering, training, forecasting
 ├── charts.py            ← All Plotly chart builders
@@ -30,13 +30,13 @@ pepper_app/
 
 ### Step 1 — Clone / download the project folder
 
-Place the entire `pepper_app/` folder somewhere on your machine.
+Place the entire `areca_app/` folder somewhere on your machine.
 
 ### Step 2 — Create a virtual environment *(recommended)*
 
 ```bash
 # Navigate into the project folder
-cd pepper_app
+cd areca_app
 
 # Create virtual environment
 python -m venv venv
@@ -156,7 +156,7 @@ Markets with < 30 usable rows show a warning and are excluded from modelling.
 | Issue | Fix |
 |-------|-----|
 | `ModuleNotFoundError: streamlit` | Run `pip install -r requirements.txt` again |
-| `FileNotFoundError: data/final.csv` | Ensure `data/final.csv` exists and you're running from `pepper_app/` |
+| `FileNotFoundError: data/final.csv` | Ensure `data/final.csv` exists and you're running from `areca_app/` |
 | App opens but shows blank | Wait ~30s for the first model to train; check terminal for errors |
 | Port 8501 in use | Run `streamlit run app.py --server.port 8502` |
 | Slow on older machines | Reduce `n_estimators` in `model.py` line ~60 from 300 → 100 |
@@ -168,7 +168,7 @@ Markets with < 30 usable rows show a warning and are excluded from modelling.
 To share with colleagues without them installing Python:
 
 ### Option A — Streamlit Community Cloud (free hosting)
-1. Push the `pepper_app/` folder to a public GitHub repository
+1. Push the `areca_app/` folder to a public GitHub repository
 2. Go to [share.streamlit.io](https://share.streamlit.io)
 3. Connect your repo, set `app.py` as the entry point
 4. Click **Deploy** — live URL in ~2 minutes
@@ -189,4 +189,4 @@ docker run -p 8501:8501 pepper-forecast
 
 ---
 
-*Karnataka APMC pepper Price Intelligence · 2025*
+*Karnataka APMC Pepper Price Intelligence · 2025*

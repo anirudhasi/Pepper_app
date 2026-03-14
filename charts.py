@@ -528,3 +528,286 @@ def metrics_summary(result: dict) -> dict:
             "Trend_pct": round((float(fc["prices"][-1]) / float(fc["prices"][0]) - 1) * 100, 1),
         }
     return out
+
+
+# =============================================================================
+# DISTRICT & CORRELATION CHARTS  (appended)
+# =============================================================================
+
+# ─────────────────────────────────────────────────────────────────────────────
+# D1. District aggregated historical price bands
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fig_district_bands(agg_df: pd.DataFrame, district: str) -> go.Figure:
+    """Arrival-weighted Min/Max/Modal for the district + total arrivals."""
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                        row_heights=[0.75, 0.25], vertical_spacing=0.06)
+
+    for col, dash in [("Min", "dot"), ("Max", "dash"), ("Modal", "solid")]:
+        fig.add_trace(go.Scatter(
+            x=agg_df.index, y=agg_df[col],
+            name=col, line=dict(color=C[col], width=1.3, dash=dash),
+            hovertemplate=f"{col} (wtd): \u20b9%{{y:,.0f}}<extra></extra>",
+        ), row=1, col=1)
+        ma30 = agg_df[col].rolling(30).mean()
+        fig.add_trace(go.Scatter(
+            x=agg_df.index, y=ma30,
+            line=dict(color=C[col], width=1.8, dash="longdash"),
+            opacity=0.45, showlegend=False, hoverinfo="skip",
+        ), row=1, col=1)
+
+    fig.add_trace(go.Bar(
+        x=agg_df.index, y=agg_df["Total_Arrivals"],
+        name="Total Arrivals", marker_color="#7986cb", opacity=0.6,
+        hovertemplate="Arrivals: %{y:,.0f} q<extra></extra>",
+    ), row=2, col=1)
+
+    fig.update_layout(
+        title=dict(text=f"\U0001f4ca District Price (Arrival-Weighted) \u2014 {district}",
+                   font=dict(size=14, color=C["text"])),
+        height=500, paper_bgcolor=C["bg"], plot_bgcolor=C["panel"],
+        font=dict(color=C["text"]),
+        legend=dict(bgcolor=C["panel"], bordercolor=C["grid"]),
+        margin=dict(l=55, r=25, t=60, b=40),
+    )
+    fig.update_xaxes(gridcolor=C["grid"])
+    fig.update_yaxes(gridcolor=C["grid"])
+    fig.update_yaxes(title_text="\u20b9/quintal", row=1, col=1)
+    fig.update_yaxes(title_text="Arrivals (q)", row=2, col=1)
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# D2. Markets-in-district overlaid price lines
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fig_district_market_overlay(df: pd.DataFrame, district: str,
+                                 price_col: str = "Modal") -> go.Figure:
+    """Individual market lines for a district on one chart."""
+    markets = df[df["District"] == district]["Market"].unique()
+    cmap = px.colors.qualitative.Set2
+    fig = go.Figure()
+    for i, mkt in enumerate(sorted(markets)):
+        mdf = df[df["Market"] == mkt].sort_values("date")
+        fig.add_trace(go.Scatter(
+            x=mdf["date"], y=mdf[price_col],
+            name=mkt, line=dict(color=cmap[i % len(cmap)], width=1.3),
+            opacity=0.85,
+            hovertemplate=f"{mkt}: \u20b9%{{y:,.0f}}<extra></extra>",
+        ))
+    return _apply_layout(
+        fig,
+        f"\U0001f4c8 Market Price Overlay \u2014 {district} ({price_col})",
+        height=420,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# D3. District seasonality (monthly averages)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fig_district_seasonality(agg_df: pd.DataFrame, district: str) -> go.Figure:
+    """Monthly average prices at district level."""
+    tmp = agg_df.copy()
+    tmp["month"] = tmp.index.month
+    monthly = tmp.groupby("month")[["Min", "Max", "Modal"]].mean().reset_index()
+    month_names = ["Jan","Feb","Mar","Apr","May","Jun",
+                   "Jul","Aug","Sep","Oct","Nov","Dec"]
+    monthly["month_name"] = monthly["month"].apply(lambda x: month_names[x - 1])
+    fig = go.Figure()
+    for col in ["Min", "Max", "Modal"]:
+        fig.add_trace(go.Bar(
+            x=monthly["month_name"], y=monthly[col],
+            name=col, marker_color=C[col], opacity=0.85,
+            hovertemplate=f"{col}: \u20b9%{{y:,.0f}}<extra></extra>",
+        ))
+    return _apply_layout(
+        fig, f"\U0001f4c5 District Monthly Seasonality \u2014 {district}", height=380
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# D4. Markets active per day (district coverage chart)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fig_district_coverage(agg_df: pd.DataFrame, district: str) -> go.Figure:
+    """Bar showing how many markets were active each day in the district."""
+    fig = go.Figure(go.Bar(
+        x=agg_df.index, y=agg_df["Markets_Active"],
+        marker_color="#4fc3f7", opacity=0.75,
+        hovertemplate="Markets active: %{y}<extra></extra>",
+    ))
+    return _apply_layout(
+        fig, f"\U0001f3ea Markets Active Per Day \u2014 {district}", height=250
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# C1. Correlation heatmap (district or all-market)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fig_correlation_heatmap(corr_df: pd.DataFrame, title: str) -> go.Figure:
+    """
+    Annotated correlation heatmap.
+    corr_df — square DataFrame from aggregation.correlation_matrix().
+    """
+    labels = corr_df.columns.tolist()
+    z      = corr_df.values.tolist()
+
+    # Annotation text — show value or 'n/a'
+    text = []
+    for row in corr_df.values:
+        text.append([f"{v:.2f}" if not np.isnan(v) else "n/a" for v in row])
+
+    fig = go.Figure(go.Heatmap(
+        z=z, x=labels, y=labels,
+        text=text, texttemplate="%{text}",
+        textfont=dict(size=9, color="white"),
+        colorscale=[
+            [0.0,  "#b71c1c"],
+            [0.25, "#e53935"],
+            [0.5,  "#1a1d27"],
+            [0.75, "#1565c0"],
+            [1.0,  "#4fc3f7"],
+        ],
+        zmin=-1, zmax=1,
+        colorbar=dict(title="r", tickfont=dict(color=C["text"])),
+        hovertemplate="<b>%{y}</b> × <b>%{x}</b><br>r = %{text}<extra></extra>",
+    ))
+    n = len(labels)
+    font_size = max(6, min(10, int(120 / n)))
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=13, color=C["text"])),
+        height=max(420, n * 28 + 120),
+        paper_bgcolor=C["bg"],
+        plot_bgcolor=C["panel"],
+        font=dict(color=C["text"], size=font_size),
+        xaxis=dict(tickangle=-45, gridcolor=C["grid"]),
+        yaxis=dict(gridcolor=C["grid"]),
+        margin=dict(l=120, r=40, t=70, b=120),
+    )
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# C2. Rolling correlation between two markets
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fig_rolling_correlation(rc_series: pd.Series,
+                             market_a: str, market_b: str,
+                             window_weeks: int = 26) -> go.Figure:
+    """26-week rolling correlation line between two markets."""
+    fig = go.Figure()
+
+    rc_clean = rc_series.dropna()
+    color_vals = rc_clean.values
+    # Colour the line by value: red=negative, blue=positive
+    fig.add_trace(go.Scatter(
+        x=rc_clean.index, y=rc_clean.values,
+        mode="lines",
+        line=dict(color="#4fc3f7", width=2),
+        name=f"Rolling {window_weeks}w correlation",
+        hovertemplate="Week %{x|%d %b %Y}<br>r = %{y:.3f}<extra></extra>",
+    ))
+    # Zero and ±0.7 reference lines via Scatter traces
+    x_range = [rc_clean.index.min(), rc_clean.index.max()] if len(rc_clean) else []
+    for y_val, color, label in [
+        (0,    C["white"],  "r = 0"),
+        (0.7,  C["Modal"],  "r = +0.7"),
+        (-0.7, C["Max"],    "r = \u22120.7"),
+    ]:
+        if x_range:
+            fig.add_trace(go.Scatter(
+                x=x_range, y=[y_val, y_val],
+                mode="lines",
+                line=dict(color=color, width=1, dash="dash"),
+                opacity=0.4, showlegend=True, name=label,
+                hoverinfo="skip",
+            ))
+
+    fig.update_layout(
+        title=dict(
+            text=f"\U0001f4c9 Rolling Correlation ({window_weeks}-week) \u2014 {market_a} \u2715 {market_b}",
+            font=dict(size=13, color=C["text"]),
+        ),
+        height=360,
+        paper_bgcolor=C["bg"], plot_bgcolor=C["panel"],
+        font=dict(color=C["text"]),
+        legend=dict(bgcolor=C["panel"], bordercolor=C["grid"]),
+        xaxis=dict(gridcolor=C["grid"]),
+        yaxis=dict(gridcolor=C["grid"], range=[-1.05, 1.05], title="Pearson r"),
+        margin=dict(l=55, r=25, t=60, b=40),
+    )
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# C3. Bar chart — top correlated pairs for a chosen market
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fig_top_correlations(corr_df: pd.DataFrame, reference_market: str,
+                          top_n: int = 10) -> go.Figure:
+    """Horizontal bar: correlation of reference_market with all others."""
+    if reference_market not in corr_df.columns:
+        return go.Figure()
+
+    series = (corr_df[reference_market]
+              .drop(reference_market)
+              .dropna()
+              .sort_values(ascending=False))
+    top = pd.concat([series.head(top_n // 2), series.tail(top_n // 2)])
+
+    colors = ["#4fc3f7" if v >= 0 else "#ef5350" for v in top.values]
+
+    fig = go.Figure(go.Bar(
+        x=top.values[::-1],
+        y=top.index.tolist()[::-1],
+        orientation="h",
+        marker=dict(color=colors[::-1], opacity=0.85),
+        hovertemplate="%{y}: r = %{x:.3f}<extra></extra>",
+    ))
+    # Zero line
+    fig.add_trace(go.Scatter(
+        x=[0, 0], y=[top.index[0], top.index[-1]],
+        mode="lines", line=dict(color=C["white"], width=1, dash="dash"),
+        showlegend=False, hoverinfo="skip",
+    ))
+    return _apply_layout(
+        fig,
+        f"\U0001f4ca Market Correlations \u2014 {reference_market} vs others",
+        height=380,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# C4. Price spread bar — district comparison snapshot
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fig_district_comparison(all_district_agg: dict,
+                              price_col: str = "Modal",
+                              last_n_days: int = 30) -> go.Figure:
+    """
+    Grouped bar: average Modal (or Min/Max) price per district over last N days.
+    Allows quick visual comparison of district-level price levels.
+    """
+    rows = []
+    for dist, agg in all_district_agg.items():
+        recent = agg[price_col].iloc[-last_n_days:]
+        rows.append({"District": dist, "Avg Price": recent.mean(),
+                     "Min": agg["Min"].iloc[-last_n_days:].mean(),
+                     "Max": agg["Max"].iloc[-last_n_days:].mean()})
+
+    cdf = pd.DataFrame(rows).sort_values("Avg Price", ascending=False)
+    fig = go.Figure()
+    for col, color in [("Min", C["Min"]), ("Avg Price", C["Modal"]), ("Max", C["Max"])]:
+        label = "Modal Avg" if col == "Avg Price" else col
+        fig.add_trace(go.Bar(
+            x=cdf["District"], y=cdf[col],
+            name=label, marker_color=color, opacity=0.85,
+            hovertemplate=f"{label}: \u20b9%{{y:,.0f}}<extra></extra>",
+        ))
+    return _apply_layout(
+        fig,
+        f"\U0001f3d7 District Price Comparison (last {last_n_days} days)",
+        height=400,
+    )
